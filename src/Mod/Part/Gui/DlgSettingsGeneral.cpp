@@ -49,6 +49,9 @@ DlgSettingsGeneral::DlgSettingsGeneral(QWidget* parent)
     , ui(new Ui_DlgSettingsGeneral)
 {
     ui->setupUi(this);
+
+    ui->fineSnapModifier->addItem(tr("Shift"), static_cast<int>(Qt::ShiftModifier));
+    ui->fineSnapModifier->addItem(tr("Ctrl"), static_cast<int>(Qt::ControlModifier));
 }
 
 /**
@@ -65,6 +68,10 @@ void DlgSettingsGeneral::saveSettings()
     ui->checkAllowCompoundBody->onSave();
     ui->enableGizmos->onSave();
     ui->delayedGizmoUpdate->onSave();
+    ui->enableCoarseSnap->onSave();
+    ui->fineSnapModifier->onSave();
+    ui->coarseLinearSnapMultiplier->onSave();
+    ui->coarseRotationSnapMultiplier->onSave();
     ui->comboDefaultProfileTypeForHole->onSave();
     ui->checkShowFinalPreview->onSave();
     ui->checkShowTransparentPreview->onSave();
@@ -81,6 +88,10 @@ void DlgSettingsGeneral::loadSettings()
     ui->checkAllowCompoundBody->onRestore();
     ui->enableGizmos->onRestore();
     ui->delayedGizmoUpdate->onRestore();
+    ui->enableCoarseSnap->onRestore();
+    ui->fineSnapModifier->onRestore();
+    ui->coarseLinearSnapMultiplier->onRestore();
+    ui->coarseRotationSnapMultiplier->onRestore();
     ui->comboDefaultProfileTypeForHole->onRestore();
     ui->checkShowFinalPreview->onRestore();
     ui->checkShowTransparentPreview->onRestore();
@@ -116,8 +127,7 @@ DlgImportExportIges::DlgImportExportIges(QWidget* parent)
 
     QRegularExpression rx;
     rx.setPattern(QStringLiteral("[\\x00-\\x7F]+"));
-    QRegularExpressionValidator* companyValidator = new QRegularExpressionValidator(
-        ui->lineEditCompany
+    QRegularExpressionValidator* companyValidator = new QRegularExpressionValidator(ui->lineEditCompany
     );
     companyValidator->setRegularExpression(rx);
     ui->lineEditCompany->setValidator(companyValidator);

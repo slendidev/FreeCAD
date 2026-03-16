@@ -24,6 +24,7 @@
 #include "Gizmo.h"
 
 #include <cmath>
+#include <QApplication>
 
 #include <Inventor/nodes/SoOrthographicCamera.h>
 #include <Inventor/nodes/SoPerspectiveCamera.h>
@@ -52,6 +53,63 @@
 
 using namespace Gui;
 
+namespace
+{
+Base::Reference<ParameterGrp> getGizmoParameterGroup()
+{
+    static Base::Reference<ParameterGrp> hGrp = App::GetApplication().GetUserParameter().GetGroup(
+        "BaseApp/Preferences/Gui/Gizmos"
+    );
+
+    return hGrp;
+}
+
+Qt::KeyboardModifiers getFineSnapModifier()
+{
+    auto modifier = static_cast<int>(
+        getGizmoParameterGroup()->GetInt("FineSnapModifier", static_cast<int>(Qt::ShiftModifier))
+    );
+    auto result = static_cast<Qt::KeyboardModifiers>(modifier);
+    switch (result.toInt()) {
+        case Qt::ShiftModifier:
+        case Qt::ControlModifier:
+            return result;
+        default:
+            return Qt::ShiftModifier;
+    }
+}
+
+bool isCoarseSnapEnabled()
+{
+    return getGizmoParameterGroup()->GetBool("EnableCoarseSnap", true);
+}
+
+int getCoarseLinearSnapMultiplier()
+{
+    int multiplier = static_cast<int>(
+        getGizmoParameterGroup()->GetInt("CoarseLinearSnapMultiplier", 5)
+    );
+    return std::max(1, multiplier);
+}
+
+int getCoarseRotationSnapMultiplier()
+{
+    int multiplier = static_cast<int>(
+        getGizmoParameterGroup()->GetInt("CoarseRotationSnapMultiplier", 5)
+    );
+    return std::max(1, multiplier);
+}
+
+double snapToStep(double value, double step)
+{
+    if (step <= 0.0) {
+        return value;
+    }
+
+    return std::round(value / step) * step;
+}
+}  // namespace
+
 void Gizmo::setDraggerPlacement(const Base::Vector3d& pos, const Base::Vector3d& dir)
 {
     setDraggerPlacement(Base::convertTo<SbVec3f>(pos), Base::convertTo<SbVec3f>(dir));
@@ -59,11 +117,7 @@ void Gizmo::setDraggerPlacement(const Base::Vector3d& pos, const Base::Vector3d&
 
 bool Gizmo::isDelayedUpdateEnabled()
 {
-    static Base::Reference<ParameterGrp> hGrp = App::GetApplication().GetUserParameter().GetGroup(
-        "BaseApp/Preferences/Gui/Gizmos"
-    );
-
-    return hGrp->GetBool("DelayedGizmoUpdate", false);
+    return getGizmoParameterGroup()->GetBool("DelayedGizmoUpdate", false);
 }
 
 double Gizmo::getMultFactor()
@@ -137,8 +191,7 @@ void LinearGizmo::updateColorTheme()
     dragger->activeColor = activeColor.asValue<SbColor>();
 
     auto baseGeom = SO_GET_PART(dragger, "baseGeom", SoArrowBase);
-    Base::Color baseGeomColor = styleParameterManager->resolve(
-        StyleParameters::DimensionVisualizerColor
+    Base::Color baseGeomColor = styleParameterManager->resolve(StyleParameters::DimensionVisualizerColor
     );
     baseGeom->color = baseGeomColor.asValue<SbColor>();
 }
@@ -255,6 +308,16 @@ void LinearGizmo::draggingFinished()
 void LinearGizmo::draggingContinued()
 {
     double value = initialValue + getDragLength();
+
+    auto fineModifier = getFineSnapModifier();
+    auto modifiers = QApplication::queryKeyboardModifiers();
+    bool useCoarseSnap = (modifiers & fineModifier) != fineModifier;
+
+    if (isCoarseSnapEnabled() && useCoarseSnap) {
+        double baseStep = std::abs(dragger->translationIncrement.getValue() / multFactor);
+        value = snapToStep(value, baseStep * getCoarseLinearSnapMultiplier());
+    }
+
     // TODO: Need to change the lower limit to sudoThis->property->minimum() once the
     // two direction extrude work gets merged
     value = std::clamp(value, dragger->translationIncrement.getValue(), property->maximum());
@@ -324,7 +387,8 @@ void RotationGizmo::updateColorTheme()
 {
     auto* styleParameterManager = Base::provideService<Gui::StyleParameters::ParameterManager>();
     Base::Color baseColor = styleParameterManager->resolve(StyleParameters::RotationGizmoBaseColor);
-    Base::Color activeColor = styleParameterManager->resolve(StyleParameters::RotationGizmoActiveColor);
+    Base::Color activeColor = styleParameterManager->resolve(StyleParameters::RotationGizmoActiveColor
+    );
 
     dragger->color = baseColor.asValue<SbColor>();
     dragger->activeColor = activeColor.asValue<SbColor>();
@@ -448,6 +512,15 @@ void RotationGizmo::draggingFinished()
 void RotationGizmo::draggingContinued()
 {
     double value = initialValue + getRotAngle();
+
+    auto fineModifier = getFineSnapModifier();
+    auto modifiers = QApplication::queryKeyboardModifiers();
+    bool useCoarseSnap = (modifiers & fineModifier) != fineModifier;
+
+    if (isCoarseSnapEnabled() && useCoarseSnap) {
+        value = snapToStep(value, getCoarseRotationSnapMultiplier());
+    }
+
     value = Base::clampAngle(
         value,
         property->minimum(),
@@ -592,14 +665,14 @@ void RadialGizmo::updateColorTheme()
 
     auto* styleParameterManager = Base::provideService<Gui::StyleParameters::ParameterManager>();
     Base::Color baseColor = styleParameterManager->resolve(StyleParameters::RotationGizmoBaseColor);
-    Base::Color activeColor = styleParameterManager->resolve(StyleParameters::RotationGizmoActiveColor);
+    Base::Color activeColor = styleParameterManager->resolve(StyleParameters::RotationGizmoActiveColor
+    );
 
     dragger->color = baseColor.asValue<SbColor>();
     dragger->activeColor = activeColor.asValue<SbColor>();
 
     auto baseGeom = SO_GET_PART(dragger, "baseGeom", SoRotatorBase);
-    Base::Color baseGeomColor = styleParameterManager->resolve(
-        StyleParameters::DimensionVisualizerColor
+    Base::Color baseGeomColor = styleParameterManager->resolve(StyleParameters::DimensionVisualizerColor
     );
     baseGeom->color = baseGeomColor.asValue<SbColor>();
 }
