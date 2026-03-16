@@ -191,7 +191,8 @@ void LinearGizmo::updateColorTheme()
     dragger->activeColor = activeColor.asValue<SbColor>();
 
     auto baseGeom = SO_GET_PART(dragger, "baseGeom", SoArrowBase);
-    Base::Color baseGeomColor = styleParameterManager->resolve(StyleParameters::DimensionVisualizerColor
+    Base::Color baseGeomColor = styleParameterManager->resolve(
+        StyleParameters::DimensionVisualizerColor
     );
     baseGeom->color = baseGeomColor.asValue<SbColor>();
 }
@@ -387,8 +388,7 @@ void RotationGizmo::updateColorTheme()
 {
     auto* styleParameterManager = Base::provideService<Gui::StyleParameters::ParameterManager>();
     Base::Color baseColor = styleParameterManager->resolve(StyleParameters::RotationGizmoBaseColor);
-    Base::Color activeColor = styleParameterManager->resolve(StyleParameters::RotationGizmoActiveColor
-    );
+    Base::Color activeColor = styleParameterManager->resolve(StyleParameters::RotationGizmoActiveColor);
 
     dragger->color = baseColor.asValue<SbColor>();
     dragger->activeColor = activeColor.asValue<SbColor>();
@@ -665,14 +665,14 @@ void RadialGizmo::updateColorTheme()
 
     auto* styleParameterManager = Base::provideService<Gui::StyleParameters::ParameterManager>();
     Base::Color baseColor = styleParameterManager->resolve(StyleParameters::RotationGizmoBaseColor);
-    Base::Color activeColor = styleParameterManager->resolve(StyleParameters::RotationGizmoActiveColor
-    );
+    Base::Color activeColor = styleParameterManager->resolve(StyleParameters::RotationGizmoActiveColor);
 
     dragger->color = baseColor.asValue<SbColor>();
     dragger->activeColor = activeColor.asValue<SbColor>();
 
     auto baseGeom = SO_GET_PART(dragger, "baseGeom", SoRotatorBase);
-    Base::Color baseGeomColor = styleParameterManager->resolve(StyleParameters::DimensionVisualizerColor
+    Base::Color baseGeomColor = styleParameterManager->resolve(
+        StyleParameters::DimensionVisualizerColor
     );
     baseGeom->color = baseGeomColor.asValue<SbColor>();
 }

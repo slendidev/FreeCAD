@@ -127,7 +127,8 @@ DlgImportExportIges::DlgImportExportIges(QWidget* parent)
 
     QRegularExpression rx;
     rx.setPattern(QStringLiteral("[\\x00-\\x7F]+"));
-    QRegularExpressionValidator* companyValidator = new QRegularExpressionValidator(ui->lineEditCompany
+    QRegularExpressionValidator* companyValidator = new QRegularExpressionValidator(
+        ui->lineEditCompany
     );
     companyValidator->setRegularExpression(rx);
     ui->lineEditCompany->setValidator(companyValidator);
