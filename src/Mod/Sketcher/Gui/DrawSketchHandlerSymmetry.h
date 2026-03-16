@@ -292,6 +292,7 @@ void DSHSymmetryController::configureToolWidget()
             WCheckbox::SecondBox,
             QApplication::translate("TaskSketcherTool_c2_symmetry", "Create symmetry constraints (J)")
         );
+        toolWidget->setCheckboxChecked(WCheckbox::SecondBox, true);
         toolWidget->setCheckboxToolTip(
             WCheckbox::SecondBox,
             QApplication::translate(
