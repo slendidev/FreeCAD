@@ -52,6 +52,7 @@
 #include <Base/Tools.h>
 #include <Gui/Command.h>
 #include <Gui/Application.h>
+#include <Gui/BitmapFactory.h>
 #include <Gui/Control.h>
 #include <Gui/Dialogs/DlgPropertyLink.h>
 #include <Gui/FileDialog.h>
@@ -4685,11 +4686,12 @@ LinkLabel::LinkLabel(QWidget* parent, const App::Property* prop)
     layout->addWidget(label);
 
     if (objProp.getPropertyName() == "AttachmentSupport") {
-        secondaryButton = new QPushButton(QStringLiteral("E"), this);
+        secondaryButton = new QPushButton(this);
 #if defined(Q_OS_MACOS)
         secondaryButton->setAttribute(Qt::WA_LayoutUsesWidgetRect);  // layout size from QMacStyle
                                                                      // was not correct
 #endif
+        secondaryButton->setIcon(Gui::BitmapFactory().iconFromTheme("Part_Attachment"));
         secondaryButton->setToolTip(tr("Open attachment editor"));
         layout->addWidget(secondaryButton);
     }
@@ -4833,9 +4835,11 @@ void LinkLabel::onSecondaryActivated()
 
 void LinkLabel::resizeEvent(QResizeEvent* e)
 {
-    editButton->setFixedWidth(e->size().height());
+    const int side = e->size().height();
+    editButton->setFixedWidth(side);
     if (secondaryButton) {
-        secondaryButton->setFixedWidth(e->size().height());
+        secondaryButton->setFixedWidth(side);
+        secondaryButton->setIconSize(QSize(side - 4, side - 4));
     }
 }
 
