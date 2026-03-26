@@ -51,6 +51,7 @@
 #include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Gui/Command.h>
+#include <Gui/Application.h>
 #include <Gui/Control.h>
 #include <Gui/Dialogs/DlgPropertyLink.h>
 #include <Gui/FileDialog.h>
@@ -4668,6 +4669,7 @@ void LinkSelection::select()
 
 LinkLabel::LinkLabel(QWidget* parent, const App::Property* prop)
     : QWidget(parent)
+    , secondaryButton(nullptr)
     , objProp(prop)
     , dlg(nullptr)
 {
@@ -4682,6 +4684,16 @@ LinkLabel::LinkLabel(QWidget* parent, const App::Property* prop)
     label->setTextInteractionFlags(Qt::TextBrowserInteraction);
     layout->addWidget(label);
 
+    if (objProp.getPropertyName() == "AttachmentSupport") {
+        secondaryButton = new QPushButton(QStringLiteral("E"), this);
+#if defined(Q_OS_MACOS)
+        secondaryButton->setAttribute(Qt::WA_LayoutUsesWidgetRect);  // layout size from QMacStyle
+                                                                     // was not correct
+#endif
+        secondaryButton->setToolTip(tr("Open attachment editor"));
+        layout->addWidget(secondaryButton);
+    }
+
     editButton = new QPushButton(QStringLiteral("…"), this);
 #if defined(Q_OS_MACOS)
     editButton->setAttribute(Qt::WA_LayoutUsesWidgetRect);  // layout size from QMacStyle was not correct
@@ -4695,6 +4707,9 @@ LinkLabel::LinkLabel(QWidget* parent, const App::Property* prop)
     // setLayout(layout);
 
     connect(label, &QLabel::linkActivated, this, &LinkLabel::onLinkActivated);
+    if (secondaryButton) {
+        connect(secondaryButton, &QPushButton::clicked, this, &LinkLabel::onSecondaryActivated);
+    }
     connect(editButton, &QPushButton::clicked, this, &LinkLabel::onEditClicked);
 }
 
@@ -4780,9 +4795,48 @@ void LinkLabel::onLinkChanged()
     }
 }
 
+void LinkLabel::onSecondaryActivated()
+{
+    if (objProp.getPropertyName() != "AttachmentSupport") {
+        return;
+    }
+
+    auto* owner = objProp.getObject();
+    auto* doc = owner ? owner->getDocument() : nullptr;
+    if (!owner || !doc) {
+        return;
+    }
+
+    auto& cmdMgr = Gui::Application::Instance->commandManager();
+    if (!cmdMgr.getCommandByName("Part_EditAttachment")) {
+        return;
+    }
+
+    auto* docName = doc->getName();
+    auto* objName = owner->getNameInDocument();
+
+    const bool restoreSelection = !Gui::Selection().isSelected(docName, objName)
+        || Gui::Selection().getSelection(docName).size() != 1;
+
+    if (restoreSelection) {
+        Gui::Selection().selStackPush(true, false, docName);
+        Gui::Selection().clearSelection(docName);
+        Gui::Selection().addSelection(docName, objName);
+    }
+
+    cmdMgr.runCommandByName("Part_EditAttachment");
+
+    if (restoreSelection) {
+        Gui::Selection().selStackGoBack(1, docName);
+    }
+}
+
 void LinkLabel::resizeEvent(QResizeEvent* e)
 {
     editButton->setFixedWidth(e->size().height());
+    if (secondaryButton) {
+        secondaryButton->setFixedWidth(e->size().height());
+    }
 }
 
 // --------------------------------------------------------------------
