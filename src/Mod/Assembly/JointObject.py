@@ -60,6 +60,7 @@ TranslatedJointTypes = [
     translate("Assembly", "Screw"),
     translate("Assembly", "Gears"),
     translate("Assembly", "Belt"),
+    translate("Assembly", "RigidGroup"),
 ]
 
 JointTypes = [
@@ -76,6 +77,7 @@ JointTypes = [
     "Screw",
     "Gears",
     "Belt",
+    "RigidGroup",
 ]
 
 JointUsingAngle = [
@@ -141,6 +143,20 @@ JointParallelForbidden = [
     "Angle",
     "Perpendicular",
 ]
+
+JointUsingComponentSelection = [
+    "RigidGroup",
+]
+
+JointUsingVariableSelectionCount = [
+    "RigidGroup",
+]
+
+JointComponentSelectionResolvers = {
+    "RigidGroup": "_getRigidGroupSelectionTarget",
+}
+
+ISOLATE_MODE_DISABLED = 3
 
 
 def solveIfAllowed(assembly, storePrev=False):
@@ -357,6 +373,18 @@ class Joint:
         if not hasattr(joint, "AngleMax"):
             self.addAngleMaxProperty(joint)
 
+        if not hasattr(joint, "Components"):
+            joint.addProperty(
+                "App::PropertyLinkList",
+                "Components",
+                "Joint",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Component list for component-based joints (RigidGroup)",
+                ),
+                locked=True,
+            )
+
         joint.setPropertyStatus("Distance", "AllowNegativeValues")
         joint.setPropertyStatus("Distance2", "AllowNegativeValues")
         joint.setPropertyStatus("LengthMin", "AllowNegativeValues")
@@ -463,6 +491,23 @@ class Joint:
             ),
             locked=True,
         )
+
+    def sanitizeComponentLinks(self, components):
+        if not components:
+            return []
+
+        sanitized = []
+        seen = set()
+        for component in components:
+            if component and hasattr(component, "Document") and hasattr(component, "Name"):
+                doc = getattr(component, "Document", None)
+                key = (doc.Name if doc else "", component.Name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                sanitized.append(component)
+
+        return sanitized
 
     def migrationScript(self, joint):
         if hasattr(joint, "Object1") and isinstance(joint.Object1, str):
@@ -785,6 +830,20 @@ class Joint:
 
         if prop == "Reference1" or prop == "Reference2":
             joint.recompute()
+
+        if prop == "Components" and joint.JointType in JointUsingComponentSelection:
+            components = self.sanitizeComponentLinks(getattr(joint, "Components", []))
+            assembly = self.getAssembly(joint)
+            isAssembly = assembly and assembly.Type == "Assembly"
+
+            if len(components) >= 2:
+                if isAssembly:
+                    solveIfAllowed(assembly, True)
+            else:
+                if isAssembly:
+                    assembly.undoSolve()
+                self.undoPreSolve(joint)
+            return
 
         if (
             not hasattr(joint, "Reference1")
@@ -1478,6 +1537,10 @@ class MakeJointSelGate:
         self.assembly = assembly
 
     def allow(self, doc, obj, sub):
+        if self.taskbox.usesComponentSelection():
+            comp = self.taskbox._getComponentSelectionTarget(doc.Name, obj.Name, sub)
+            return comp is not None
+
         if not sub:
             return False
 
@@ -1640,6 +1703,8 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         bind = Gui.ExpressionBinding(self.jForm.limitRotMaxSpinbox).bind(self.joint, "AngleMax")
 
         self.adaptUi()
+        if self.usesComponentSelection():
+            self._setComponentSelectionIsolationUi(force_disabled_index=True)
 
         if self.creating:
             # This has to be after adaptUi so that properties default values are adapted
@@ -1664,11 +1729,148 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
 
         self.addition_rejected = False
 
-    def accept(self):
-        if len(self.refs) != 2:
-            App.Console.PrintWarning(
-                translate("Assembly", "Select 2 elements from 2 separate parts")
+    def usesComponentSelection(self):
+        return self.jType in JointUsingComponentSelection
+
+    def getMinSelectionCount(self):
+        return 2
+
+    def getMaxSelectionCount(self):
+        if self.jType in JointUsingVariableSelectionCount:
+            return None
+        return 2
+
+    def isSelectionCountValid(self, count):
+        min_count = self.getMinSelectionCount()
+        max_count = self.getMaxSelectionCount()
+        return count >= min_count and (max_count is None or count <= max_count)
+
+    def getSelectionWarningMessage(self):
+        if not self.usesComponentSelection():
+            return translate("Assembly", "Select 2 elements from 2 separate parts")
+
+        min_count = self.getMinSelectionCount()
+        max_count = self.getMaxSelectionCount()
+        if max_count is None:
+            return translate("Assembly", "Select at least {count} components").format(
+                count=min_count
             )
+        if min_count == max_count:
+            return translate("Assembly", "Select {count} components").format(count=min_count)
+        return translate("Assembly", "Select between {min} and {max} components").format(
+            min=min_count,
+            max=max_count,
+        )
+
+    def _makeComponentReference(self, component):
+        return [component, [""]]
+
+    def _getValidUniqueComponentsFromRefs(self):
+        components = []
+        for reference in self.refs:
+            component = self.getMovingPart(reference)
+            if not component:
+                continue
+            components.append(component)
+        return self.joint.Proxy.sanitizeComponentLinks(components)
+
+    def _loadComponentRefsFromJoint(self):
+        self.refs = []
+        self.presel_ref = None
+
+        components = self.joint.Proxy.sanitizeComponentLinks(getattr(self.joint, "Components", []))
+
+        for component in components:
+            self.refs.append(self._makeComponentReference(component))
+            Gui.Selection.addSelection(component, "")
+
+    def _canAddComponentReference(self, component):
+        max_count = self.getMaxSelectionCount()
+        return (max_count is None or len(self.refs) < max_count) and not any(
+            self.getMovingPart(reference) == component for reference in self.refs
+        )
+
+    def _tryAddComponentReference(self, component):
+        if not self._canAddComponentReference(component):
+            return False
+
+        self.refs.append(self._makeComponentReference(component))
+        return True
+
+    def _clearSelectionStateForModeChange(self):
+        self.refs.clear()
+        self.presel_ref = None
+        Gui.Selection.clearSelection()
+        self.joint.ViewObject.Proxy.showPreviewJCS(False)
+        self.updateJoint()
+
+    def _setComponentSelectionIsolationUi(self, force_disabled_index=False):
+        if self.usesComponentSelection():
+            if force_disabled_index:
+                self.jForm.isolateType.setCurrentIndex(ISOLATE_MODE_DISABLED)
+            self.jForm.isolateType.setEnabled(False)
+            self.jForm.isolateType.setToolTip(
+                translate("Assembly", "Isolation is not used for component-based joints")
+            )
+        else:
+            self.jForm.isolateType.setEnabled(True)
+            self.jForm.isolateType.setToolTip("")
+
+    def _isValidComponentSelectionTarget(self, target_obj):
+        if (
+            not target_obj
+            or target_obj == self.assembly
+            or not self.assembly.hasObject(target_obj)
+        ):
+            return False
+
+        if (
+            target_obj.isDerivedFrom("Assembly::AssemblyLink")
+            and hasattr(target_obj, "Rigid")
+            and not target_obj.Rigid
+        ):
+            return False
+
+        if target_obj.isDerivedFrom("App::DocumentObjectGroup") or UtilsAssembly.isLinkGroup(
+            target_obj
+        ):
+            return False
+
+        return True
+
+    def _findComponentSelectionTargetFromSub(self, root_obj, sub_name):
+        if not sub_name:
+            return root_obj
+
+        objs_names, _element_name = UtilsAssembly.getObjsNamesAndElement(root_obj.Name, sub_name)
+        if self.assembly.Name not in objs_names:
+            if self._isValidComponentSelectionTarget(root_obj):
+                return root_obj
+            return None
+
+        asm_idx = objs_names.index(self.assembly.Name)
+        candidates = objs_names[asm_idx + 1 :]
+        for name in candidates:
+            obj = root_obj.Document.getObject(name)
+            if self._isValidComponentSelectionTarget(obj):
+                return obj
+
+        return None
+
+    def _getComponentSelectionTarget(self, doc_name, obj_name, sub_name):
+        resolver_name = JointComponentSelectionResolvers.get(self.jType)
+        if resolver_name:
+            resolver = getattr(self, resolver_name, None)
+            if resolver:
+                return resolver(doc_name, obj_name, sub_name)
+        return None
+
+    def accept(self):
+        invalid_selection = not self.isSelectionCountValid(len(self.refs))
+        warning = self.getSelectionWarningMessage()
+
+        if invalid_selection:
+            App.Console.PrintWarning(warning)
             return False
 
         self.deactivate()
@@ -1726,24 +1928,43 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         selection = Gui.Selection.getSelectionEx("*", 0)
         if not selection:
             return
+
+        is_component_mode = self.usesComponentSelection()
+
         for sel in selection:
             # If you select 2 solids (bodies for example) within an assembly.
             # There'll be a single sel but 2 SubElementNames.
 
             if not sel.SubElementNames:
-                # no subnames, so its a root assembly itself that is selected.
-                Gui.Selection.removeSelection(sel.Object)
+                if is_component_mode:
+                    comp = self._getComponentSelectionTarget(
+                        sel.Object.Document.Name, sel.Object.Name, ""
+                    )
+                    if comp:
+                        self._tryAddComponentReference(comp)
+                else:
+                    # no subnames, so its a root assembly itself that is selected.
+                    Gui.Selection.removeSelection(sel.Object)
                 continue
 
             for sub_name in sel.SubElementNames:
                 # We add sub_name twice because the joints references have element name + vertex name
                 # and in the case of initial selection, both are the same.
 
-                moving_part, new_sub = UtilsAssembly.getComponentReference(
-                    self.assembly, sel.Object, sub_name
-                )
+                if is_component_mode:
+                    moving_part = self._getComponentSelectionTarget(
+                        sel.Object.Document.Name, sel.Object.Name, sub_name
+                    )
+                else:
+                    moving_part, new_sub = UtilsAssembly.getComponentReference(
+                        self.assembly, sel.Object, sub_name
+                    )
                 if not moving_part:
                     break
+
+                if is_component_mode:
+                    self._tryAddComponentReference(moving_part)
+                    continue
 
                 # Construct the reference using the Component as the root
                 ref = [moving_part, [new_sub, new_sub]]
@@ -1761,8 +1982,10 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
 
                 self.refs.append(ref)
 
-        # do not accept initial selection if we don't have 2 selected features
-        if len(self.refs) != 2:
+        # Keep initial selection only if enough references are selected.
+        valid_initial_selection = self.isSelectionCountValid(len(self.refs))
+
+        if not valid_initial_selection:
             self.refs.clear()
             Gui.Selection.clearSelection()
         else:
@@ -1785,8 +2008,15 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         self.joint.purgeTouched()
 
     def onJointTypeChanged(self, index):
+        old_type = self.jType
+        old_component_selection = old_type in JointUsingComponentSelection
         self.jType = JointTypes[self.jForm.jointType.currentIndex()]
         self.joint.Proxy.setJointType(self.joint, self.jType)
+
+        if old_component_selection != self.usesComponentSelection():
+            self._clearSelectionStateForModeChange()
+            self._setComponentSelectionIsolationUi(force_disabled_index=True)
+
         self.adaptUi()
 
     def onAngleChanged(self, quantity):
@@ -1895,6 +2125,8 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         needLimits = needLengthLimits or needAngleLimits
         self.jForm.groupBox_limits.setVisible(needLimits)
 
+        self._setComponentSelectionIsolationUi()
+
         if needLimits:
             self.joint.EnableLengthMin = self.jForm.limitCheckbox1.isChecked()
             self.joint.EnableLengthMax = self.jForm.limitCheckbox2.isChecked()
@@ -1953,7 +2185,7 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         self.updateOffsetWidgets()
 
     def updateIsolation(self):
-        """Isolates the two selected components or clears isolation."""
+        """Isolates selected components or clears isolation."""
 
         if self.activeType != "Assembly":
             return
@@ -1962,18 +2194,21 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
 
         assembly_vobj = self.assembly.ViewObject
 
-        # If "Disabled" is selected, clear any active isolation and stop.
-        if isolate_mode == 3:
+        if self.usesComponentSelection():
             assembly_vobj.clearIsolate()
             return
 
-        if len(self.refs) == 2:
+        # If "Disabled" is selected, clear any active isolation and stop.
+        if isolate_mode == ISOLATE_MODE_DISABLED:
+            assembly_vobj.clearIsolate()
+            return
+
+        should_isolate = len(self.refs) >= self.getMinSelectionCount()
+
+        if should_isolate:
             try:
-                # Use a set to handle cases where both refs point to the same object
-                parts_to_isolate = {
-                    self.getMovingPart(self.refs[0]),
-                    self.getMovingPart(self.refs[1]),
-                }
+                # Use a set to handle potential duplicate selections.
+                parts_to_isolate = {self.getMovingPart(ref) for ref in self.refs}
                 assembly_vobj.isolateComponents(list(parts_to_isolate), isolate_mode)
             except Exception as e:
                 App.Console.PrintWarning(f"Could not update isolation: {e}\n")
@@ -1982,21 +2217,29 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
             assembly_vobj.clearIsolate()
 
     def updateTaskboxFromJoint(self):
-        self.refs = []
-        self.presel_ref = None
+        joint_type_index = JointTypes.index(self.joint.JointType)
+        self.jForm.jointType.blockSignals(True)
+        self.jForm.jointType.setCurrentIndex(joint_type_index)
+        self.jForm.jointType.blockSignals(False)
+        self.jType = self.joint.JointType
 
-        ref1 = self.joint.Reference1
-        ref2 = self.joint.Reference2
+        if self.joint.JointType in JointUsingComponentSelection:
+            self._loadComponentRefsFromJoint()
+        else:
+            self.refs = []
+            self.presel_ref = None
 
-        if UtilsAssembly.isRefValid(ref1, 2):
-            self.refs.append(ref1)
-            sub1 = UtilsAssembly.addTipNameToSub(ref1)
-            Gui.Selection.addSelection(ref1[0].Document.Name, ref1[0].Name, sub1)
+            ref1 = self.joint.Reference1
+            ref2 = self.joint.Reference2
 
-        if UtilsAssembly.isRefValid(ref2, 2):
-            self.refs.append(ref2)
-            sub2 = UtilsAssembly.addTipNameToSub(ref2)
-            Gui.Selection.addSelection(ref2[0].Document.Name, ref2[0].Name, sub2)
+            if UtilsAssembly.isRefValid(ref1, 2):
+                self.refs.append(ref1)
+                sub1 = UtilsAssembly.addTipNameToSub(ref1)
+                Gui.Selection.addSelection(ref1[0].Document.Name, ref1[0].Name, sub1)
+            if UtilsAssembly.isRefValid(ref2, 2):
+                self.refs.append(ref2)
+                sub2 = UtilsAssembly.addTipNameToSub(ref2)
+                Gui.Selection.addSelection(ref2[0].Document.Name, ref2[0].Name, sub2)
 
         self.jForm.angleSpinbox.setProperty("rawValue", self.joint.Angle.Value)
         self.jForm.distanceSpinbox.setProperty("rawValue", self.joint.Distance.Value)
@@ -2015,7 +2258,6 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         self.jForm.limitRotMinSpinbox.setProperty("rawValue", self.joint.AngleMin.Value)
         self.jForm.limitRotMaxSpinbox.setProperty("rawValue", self.joint.AngleMax.Value)
 
-        self.jForm.jointType.setCurrentIndex(JointTypes.index(self.joint.JointType))
         self.updateJointList()
         self.updateIsolation()
 
@@ -2024,7 +2266,14 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         self.updateJointList()
 
         # Then we pass the new list to the joint object
-        self.joint.Proxy.setJointConnectors(self.joint, self.refs)
+        if self.usesComponentSelection():
+            self.joint.Components = self.joint.Proxy.sanitizeComponentLinks(
+                self._getValidUniqueComponentsFromRefs()
+            )
+            self.joint.Proxy.setJointConnectors(self.joint, [])
+            self.joint.ViewObject.Proxy.showPreviewJCS(False)
+        else:
+            self.joint.Proxy.setJointConnectors(self.joint, self.refs)
 
         self.updateIsolation()
 
@@ -2035,9 +2284,10 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
 
             sname = UtilsAssembly.getObject(ref).Label
 
-            element_name = UtilsAssembly.getElementName(ref[1][0])
-            if element_name != "":
-                sname = sname + "." + element_name
+            if not self.usesComponentSelection():
+                element_name = UtilsAssembly.getElementName(ref[1][0])
+                if element_name != "":
+                    sname = sname + "." + element_name
             simplified_names.append(sname)
         self.jForm.featureList.addItems(simplified_names)
 
@@ -2071,6 +2321,10 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
                 self.jForm.limitRotMaxSpinbox.setProperty("rawValue", angle)
 
     def moveMouse(self, info):
+        if self.usesComponentSelection():
+            self.joint.ViewObject.Proxy.showPreviewJCS(False)
+            return
+
         if len(self.refs) >= 2 or (
             len(self.refs) == 1
             and (
@@ -2180,8 +2434,67 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
     def getMovingPart(self, ref):
         return UtilsAssembly.getMovingPart(ref)
 
+    def _getRigidGroupSelectionTarget(self, doc_name, obj_name, sub_name):
+        doc = App.getDocument(doc_name)
+        if not doc:
+            return None
+
+        rootObj = doc.getObject(obj_name)
+        if not rootObj:
+            return None
+
+        if sub_name:
+            if UtilsAssembly.getElementName(sub_name) == "":
+                target_obj = self._findComponentSelectionTargetFromSub(rootObj, sub_name)
+            else:
+                resolved = rootObj.resolveSubElement(sub_name, True)
+                if not resolved:
+                    return None
+
+                sub_name = UtilsAssembly.fixBodyExtraFeatureInSub(doc_name, resolved[2])
+                target_obj = self._findComponentSelectionTargetFromSub(rootObj, sub_name)
+        else:
+            target_obj = rootObj
+
+        if not self._isValidComponentSelectionTarget(target_obj):
+            return None
+
+        return target_obj
+
     # selectionObserver stuff
     def addSelection(self, doc_name, obj_name, sub_name, mousePos):
+        if self.usesComponentSelection():
+            self._addComponentSelection(doc_name, obj_name, sub_name)
+            return
+
+        self._addConnectorSelection(doc_name, obj_name, sub_name, mousePos)
+
+    def _addComponentSelection(self, doc_name, obj_name, sub_name):
+        comp = self._getComponentSelectionTarget(doc_name, obj_name, sub_name)
+        if not comp:
+            if sub_name:
+                Gui.Selection.removeSelection(doc_name, obj_name, sub_name)
+            return
+
+        is_component_pick = (sub_name == "") or (UtilsAssembly.getElementName(sub_name) == "")
+        if not is_component_pick:
+            Gui.Selection.removeSelection(doc_name, obj_name, sub_name)
+            if Gui.Selection.isSelected(comp, ""):
+                Gui.Selection.removeSelection(comp, "")
+            else:
+                Gui.Selection.addSelection(comp, "")
+            return
+
+        if not self._canAddComponentReference(comp):
+            Gui.Selection.removeSelection(doc_name, obj_name, sub_name)
+            return
+
+        self.refs.append(self._makeComponentReference(comp))
+        self.updateJoint()
+        self.joint.ViewObject.Proxy.showPreviewJCS(False)
+
+    def _addConnectorSelection(self, doc_name, obj_name, sub_name, mousePos):
+
         rootObj = App.getDocument(doc_name).getObject(obj_name)
 
         # We do not need the full TNP string like :"Part.Body.Pad.;#a:1;:G0;XTR;:Hc94:8,F.Face6"
@@ -2234,10 +2547,29 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         self.joint.ViewObject.Proxy.showPreviewJCS(False)
 
     def removeSelection(self, doc_name, obj_name, sub_name, mousePos=None):
+        if self.usesComponentSelection():
+            self._removeComponentSelection(doc_name, obj_name, sub_name)
+            return
+
         if self.addition_rejected:
             self.addition_rejected = False
             return
 
+        self._removeConnectorSelection(doc_name, obj_name, sub_name)
+
+    def _removeComponentSelection(self, doc_name, obj_name, sub_name):
+        comp = self._getComponentSelectionTarget(doc_name, obj_name, sub_name)
+        if not comp:
+            return
+
+        for reference in self.refs[:]:
+            if self.getMovingPart(reference) == comp:
+                self.refs.remove(reference)
+                break
+
+        self.updateJoint()
+
+    def _removeConnectorSelection(self, doc_name, obj_name, sub_name):
         rootObj = App.getDocument(doc_name).getObject(obj_name)
 
         # Apply the same processing as in addSelection to ensure consistent comparison
@@ -2265,6 +2597,10 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
 
     def setPreselection(self, doc_name, obj_name, sub_name):
         if not sub_name:
+            self.presel_ref = None
+            return
+
+        if self.usesComponentSelection():
             self.presel_ref = None
             return
 

@@ -33,6 +33,7 @@
 #include <App/DocumentObjectGroup.h>
 #include <App/FeaturePythonPyImp.h>
 #include <App/Link.h>
+#include <App/PropertyLinks.h>
 #include <App/PropertyPythonObject.h>
 #include <Base/Console.h>
 #include <Base/Placement.h>
@@ -738,15 +739,46 @@ std::vector<App::DocumentObject*> AssemblyObject::getJoints(bool delBadJoints, b
             continue;
         }
 
-        auto* part1 = getMovingPartFromRef(joint, "Reference1");
-        auto* part2 = getMovingPartFromRef(joint, "Reference2");
-        if (!part1 || !part2 || part1->getFullName() == part2->getFullName()) {
-            // Remove incomplete joints. Left-over when the user deletes a part.
-            // Remove incoherent joints (self-pointing joints)
-            if (delBadJoints) {
-                getDocument()->removeObject(joint->getNameInDocument());
+        const auto jointType = getJointType(joint);
+        if (jointType == JointType::RigidGroup) {
+            const auto* const componentsProp = joint->getPropertyByName<App::PropertyLinkList>(
+                "Components"
+            );
+            if (!componentsProp) {
+                if (delBadJoints) {
+                    getDocument()->removeObject(joint->getNameInDocument());
+                }
+                continue;
             }
-            continue;
+
+            std::unordered_set<App::DocumentObject*> unique;
+            bool hasInvalid = false;
+            for (auto* const component : componentsProp->getValues()) {
+                if (!component) {
+                    hasInvalid = true;
+                    break;
+                }
+                unique.insert(component);
+            }
+
+            if (hasInvalid || unique.size() < 2) {
+                if (delBadJoints) {
+                    getDocument()->removeObject(joint->getNameInDocument());
+                }
+                continue;
+            }
+        }
+        else {
+            auto* part1 = getMovingPartFromRef(joint, "Reference1");
+            auto* part2 = getMovingPartFromRef(joint, "Reference2");
+            if (!part1 || !part2 || part1->getFullName() == part2->getFullName()) {
+                // Remove incomplete joints. Left-over when the user deletes a part.
+                // Remove incoherent joints (self-pointing joints)
+                if (delBadJoints) {
+                    getDocument()->removeObject(joint->getNameInDocument());
+                }
+                continue;
+            }
         }
 
         auto proxy = dynamic_cast<App::PropertyPythonObject*>(joint->getPropertyByName("Proxy"));
@@ -823,6 +855,21 @@ std::vector<App::DocumentObject*> AssemblyObject::getJointsOfPart(App::DocumentO
     std::vector<App::DocumentObject*> jointsOf;
 
     for (auto joint : joints) {
+        if (getJointType(joint) == JointType::RigidGroup) {
+            auto const* const componentsProp = joint->getPropertyByName<App::PropertyLinkList>(
+                "Components"
+            );
+            if (!componentsProp) {
+                continue;
+            }
+
+            const auto& components = componentsProp->getValues();
+            if (std::ranges::find(components, part) != components.end()) {
+                jointsOf.push_back(joint);
+            }
+            continue;
+        }
+
         App::DocumentObject* part1 = getMovingPartFromRef(joint, "Reference1");
         App::DocumentObject* part2 = getMovingPartFromRef(joint, "Reference2");
         if (part == part1 || part == part2) {

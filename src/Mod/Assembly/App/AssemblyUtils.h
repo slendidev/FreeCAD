@@ -61,6 +61,7 @@ enum class JointType
     Screw,
     Gears,
     Belt,
+    RigidGroup,
 };
 
 enum class GeometryType
