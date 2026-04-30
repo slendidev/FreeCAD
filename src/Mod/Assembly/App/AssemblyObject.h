@@ -132,7 +132,7 @@ public:
         Base::Placement offsetPlc;  // This is the offset within the bundled parts
     };
     MbDPartData getMbDData(App::DocumentObject* part);
-    std::shared_ptr<MbD::ASMTMarker> makeMbdMarker(std::string& name, Base::Placement& plc);
+    std::shared_ptr<MbD::ASMTMarker> makeMbdMarker(const std::string& name, Base::Placement& plc);
     std::vector<std::shared_ptr<MbD::ASMTJoint>> makeMbdJoint(App::DocumentObject* joint);
     std::shared_ptr<MbD::ASMTJoint> makeMbdJointOfType(App::DocumentObject* joint, JointType jointType);
     std::shared_ptr<MbD::ASMTJoint> makeMbdJointDistance(App::DocumentObject* joint);
@@ -167,6 +167,7 @@ public:
     std::unordered_set<App::DocumentObject*> fixGroundedParts();
     void fixGroundedPart(App::DocumentObject* obj, Base::Placement& plc, std::string& jointName);
 
+    bool isJointConnectingPartToGround(App::DocumentObject* joint, App::DocumentObject* part);
     bool isJointConnectingPartToGround(App::DocumentObject* joint, const char* partPropName);
     bool isJointTypeConnecting(App::DocumentObject* joint);
 

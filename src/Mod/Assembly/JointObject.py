@@ -564,6 +564,16 @@ class Joint:
 
                     obj = getattr(joint, object_attr)
 
+                    if (
+                        obj is None
+                        or not isinstance(obj, (list, tuple))
+                        or len(obj) < 2
+                        or obj[0] is None
+                        or not isinstance(obj[1], (list, tuple))
+                        or len(obj[1]) < 2
+                    ):
+                        return
+
                     base_obj = obj[0]
                     part = getattr(joint, part_attr)
                     elt = obj[1][0]
@@ -627,6 +637,16 @@ class Joint:
             try:
                 if hasattr(joint, reference_attr):
                     ref = getattr(joint, reference_attr)
+
+                    if (
+                        ref is None
+                        or not isinstance(ref, (list, tuple))
+                        or len(ref) < 2
+                        or ref[0] is None
+                        or not isinstance(ref[1], (list, tuple))
+                        or len(ref[1]) < 2
+                    ):
+                        return
 
                     refObj = ref[0]
                     if refObj is None:
@@ -1817,11 +1837,7 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
             self.jForm.isolateType.setToolTip("")
 
     def _isValidComponentSelectionTarget(self, target_obj):
-        if (
-            not target_obj
-            or target_obj == self.assembly
-            or not self.assembly.hasObject(target_obj)
-        ):
+        if not target_obj or target_obj == self.assembly or not self.assembly.hasObject(target_obj):
             return False
 
         if (

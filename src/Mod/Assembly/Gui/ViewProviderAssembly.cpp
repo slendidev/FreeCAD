@@ -897,12 +897,17 @@ ViewProviderAssembly::DragMode ViewProviderAssembly::findDragMode()
         for (auto& partRef : refs) {
             auto obj = partRef.obj;
             auto ref = partRef.ref;
-            if (!obj || !ref) {
+            if (!obj) {
                 continue;
             }
 
             auto* pPlc = obj->getPlacementProperty();
             if (!pPlc) {
+                continue;
+            }
+
+            if (!ref) {
+                docsToMove.emplace_back(obj, pPlc->getValue(), obj, "");
                 continue;
             }
 
@@ -936,7 +941,7 @@ ViewProviderAssembly::DragMode ViewProviderAssembly::findDragMode()
         }
 
         JointType jointType = getJointType(movingJoint);
-        if (jointType == JointType::Fixed) {
+        if (jointType == JointType::Fixed || jointType == JointType::RigidGroup) {
             // If fixed joint we need to find the upstream joint to find move mode.
             // For example : Gnd -(revolute)- A -(fixed)- B : if user try to move B, then we should
             // actually move A
@@ -970,6 +975,11 @@ ViewProviderAssembly::DragMode ViewProviderAssembly::findDragMode()
             }
 
             jointType = getJointType(movingJoint);
+        }
+
+        const bool hasReferenceSide = (pName == "Reference1" || pName == "Reference2");
+        if (!hasReferenceSide) {
+            return DragMode::Translation;
         }
 
         const char* plcPropName = (pName == "Reference1") ? "Placement1" : "Placement2";

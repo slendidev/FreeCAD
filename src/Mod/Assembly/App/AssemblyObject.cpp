@@ -21,6 +21,7 @@
  *                                                                          *
  ***************************************************************************/
 
+#include <algorithm>
 #include <boost/core/ignore_unused.hpp>
 #include <cmath>
 #include <vector>
@@ -92,6 +93,91 @@ using namespace MbD;
 
 
 namespace PartApp = Part;
+
+namespace
+{
+
+[[nodiscard]] std::vector<App::DocumentObject*> getValidUniqueComponents(
+    const App::PropertyLinkList* const componentsProp
+)
+{
+    if (!componentsProp) {
+        return {};
+    }
+
+    std::vector<App::DocumentObject*> components;
+    components.reserve(componentsProp->getValues().size());
+
+    std::unordered_set<App::DocumentObject*> seen;
+    for (auto* const component : componentsProp->getValues()) {
+        if (!component || seen.contains(component)) {
+            continue;
+        }
+        seen.insert(component);
+        components.push_back(component);
+    }
+
+    return components;
+}
+
+[[nodiscard]] std::vector<App::DocumentObject*> getJointParticipants(App::DocumentObject* const joint)
+{
+    if (!joint) {
+        return {};
+    }
+
+    if (getJointType(joint) == JointType::RigidGroup) {
+        auto const* const componentsProp = joint->getPropertyByName<App::PropertyLinkList>(
+            "Components"
+        );
+        return getValidUniqueComponents(componentsProp);
+    }
+
+    auto* const part1 = getMovingPartFromRef(joint, "Reference1");
+    auto* const part2 = getMovingPartFromRef(joint, "Reference2");
+    if (!part1 || !part2 || part1 == part2) {
+        return {};
+    }
+
+    return {part1, part2};
+}
+
+[[nodiscard]] std::vector<ObjRef> getConnectedJointParticipants(
+    App::DocumentObject* const joint,
+    App::DocumentObject* const part
+)
+{
+    const auto participants = getJointParticipants(joint);
+    if (participants.size() < 2 || std::ranges::find(participants, part) == participants.end()) {
+        return {};
+    }
+
+    if (getJointType(joint) == JointType::RigidGroup) {
+        std::vector<ObjRef> connectedParts;
+        connectedParts.reserve(participants.size() - 1);
+
+        for (auto* const participant : participants) {
+            if (participant == part) {
+                continue;
+            }
+            connectedParts.push_back({participant, nullptr});
+        }
+
+        return connectedParts;
+    }
+
+    const auto otherPropName = (participants.front() == part) ? "Reference2" : "Reference1";
+    auto* const ref = dynamic_cast<App::PropertyXLinkSub*>(joint->getPropertyByName(otherPropName));
+    if (!ref) {
+        return {};
+    }
+
+    auto* const connectedPart = (participants.front() == part) ? participants.back()
+                                                               : participants.front();
+    return {{connectedPart, ref}};
+}
+
+}  // namespace
 
 
 // ================================ Assembly Object ============================
@@ -662,6 +748,14 @@ App::DocumentObject* AssemblyObject::getJointOfPartConnectingToGround(
             continue;
         }
 
+        if (getJointType(joint) == JointType::RigidGroup) {
+            if (isJointConnectingPartToGround(joint, part)) {
+                name.clear();
+                return joint;
+            }
+            continue;
+        }
+
         App::DocumentObject* part1 = getMovingPartFromRef(joint, "Reference1");
         App::DocumentObject* part2 = getMovingPartFromRef(joint, "Reference2");
         if (!part1 || !part2) {
@@ -744,24 +838,8 @@ std::vector<App::DocumentObject*> AssemblyObject::getJoints(bool delBadJoints, b
             const auto* const componentsProp = joint->getPropertyByName<App::PropertyLinkList>(
                 "Components"
             );
-            if (!componentsProp) {
-                if (delBadJoints) {
-                    getDocument()->removeObject(joint->getNameInDocument());
-                }
-                continue;
-            }
-
-            std::unordered_set<App::DocumentObject*> unique;
-            bool hasInvalid = false;
-            for (auto* const component : componentsProp->getValues()) {
-                if (!component) {
-                    hasInvalid = true;
-                    break;
-                }
-                unique.insert(component);
-            }
-
-            if (hasInvalid || unique.size() < 2) {
+            const auto components = getValidUniqueComponents(componentsProp);
+            if (components.size() < 2) {
                 if (delBadJoints) {
                     getDocument()->removeObject(joint->getNameInDocument());
                 }
@@ -971,55 +1049,50 @@ void AssemblyObject::fixGroundedPart(App::DocumentObject* obj, Base::Placement& 
     mbdAssembly->addJoint(mbdJoint);
 }
 
-bool AssemblyObject::isJointConnectingPartToGround(App::DocumentObject* joint, const char* propname)
+bool AssemblyObject::isJointConnectingPartToGround(
+    App::DocumentObject* const joint,
+    App::DocumentObject* const part
+)
 {
-    if (!joint || !isJointTypeConnecting(joint)) {
+    if (!joint || !part || !isJointTypeConnecting(joint)) {
         return false;
     }
 
-    App::DocumentObject* part = getMovingPartFromRef(joint, propname);
-    if (!part) {
+    const auto participants = getJointParticipants(joint);
+    if (participants.size() < 2 || std::ranges::find(participants, part) == participants.end()) {
         return false;
     }
 
-    // Check if the part is grounded.
-    bool isGrounded = isPartGrounded(part);
-    if (isGrounded) {
+    if (isPartGrounded(part) || !isPartConnected(part)) {
         return false;
     }
 
-    // Check if the part is disconnected even with the joint
-    bool isConnected = isPartConnected(part);
-    if (!isConnected) {
-        return false;
-    }
+    const auto jointsOfPart = getJointsOfPart(part);
+    std::vector<std::pair<App::DocumentObject*, bool>> suspendedJoints;
+    suspendedJoints.reserve(jointsOfPart.size());
 
-    // to know if a joint is connecting to ground we disable all the other joints
-    std::vector<App::DocumentObject*> jointsOfPart = getJointsOfPart(part);
-    std::vector<bool> activatedStates;
-
-    for (auto jointi : jointsOfPart) {
-        if (jointi->getFullName() == joint->getFullName()) {
+    for (auto* const relatedJoint : jointsOfPart) {
+        if (!relatedJoint || relatedJoint == joint) {
             continue;
         }
 
-        activatedStates.push_back(getJointActivated(jointi));
-        setJointActivated(jointi, false);
+        suspendedJoints.emplace_back(relatedJoint, getJointActivated(relatedJoint));
+        setJointActivated(relatedJoint, false);
     }
 
-    isConnected = isPartConnected(part);
+    const bool isConnected = isPartConnected(part);
 
-    // restore activation states
-    for (auto jointi : jointsOfPart) {
-        if (jointi->getFullName() == joint->getFullName() || activatedStates.empty()) {
-            continue;
-        }
-
-        setJointActivated(jointi, activatedStates[0]);
-        activatedStates.erase(activatedStates.begin());
+    for (const auto& [relatedJoint, wasActivated] : suspendedJoints) {
+        setJointActivated(relatedJoint, wasActivated);
     }
 
     return isConnected;
+}
+
+bool AssemblyObject::isJointConnectingPartToGround(App::DocumentObject* joint, const char* propname)
+{
+    auto* const part = (propname && *propname) ? getMovingPartFromRef(joint, propname) : nullptr;
+    return isJointConnectingPartToGround(joint, part);
 }
 
 bool AssemblyObject::isJointTypeConnecting(App::DocumentObject* joint)
@@ -1066,21 +1139,16 @@ void AssemblyObject::removeUnconnectedJoints(
     }
 
     // Filter out unconnected joints
-    joints.erase(
-        std::remove_if(
-            joints.begin(),
-            joints.end(),
-            [&](App::DocumentObject* joint) {
-                App::DocumentObject* obj1 = getMovingPartFromRef(joint, "Reference1");
-                App::DocumentObject* obj2 = getMovingPartFromRef(joint, "Reference2");
-                return (
-                    !isObjInSetOfObjRefs(obj1, connectedParts)
-                    || !isObjInSetOfObjRefs(obj2, connectedParts)
-                );
-            }
-        ),
-        joints.end()
-    );
+    std::erase_if(joints, [&](App::DocumentObject* const joint) {
+        const auto participants = getJointParticipants(joint);
+        return participants.size() < 2
+            || std::ranges::any_of(
+                   participants,
+                   [&](App::DocumentObject* const participant) {
+                       return !isObjInSetOfObjRefs(participant, connectedParts);
+                   }
+            );
+    });
 }
 
 void AssemblyObject::traverseAndMarkConnectedParts(
@@ -1116,27 +1184,8 @@ std::vector<ObjRef> AssemblyObject::getConnectedParts(
             continue;
         }
 
-        App::DocumentObject* obj1 = getMovingPartFromRef(joint, "Reference1");
-        App::DocumentObject* obj2 = getMovingPartFromRef(joint, "Reference2");
-
-        if (!obj1 || !obj2) {
-            continue;
-        }
-
-        if (obj1 == part) {
-            auto* ref = dynamic_cast<App::PropertyXLinkSub*>(joint->getPropertyByName("Reference2"));
-            if (!ref) {
-                continue;
-            }
-            connectedParts.push_back({obj2, ref});
-        }
-        else if (obj2 == part) {
-            auto* ref = dynamic_cast<App::PropertyXLinkSub*>(joint->getPropertyByName("Reference1"));
-            if (!ref) {
-                continue;
-            }
-            connectedParts.push_back({obj1, ref});
-        }
+        auto jointConnections = getConnectedJointParticipants(joint, part);
+        connectedParts.insert(connectedParts.end(), jointConnections.begin(), jointConnections.end());
     }
     return connectedParts;
 }
@@ -1469,6 +1518,67 @@ std::vector<std::shared_ptr<MbD::ASMTJoint>> AssemblyObject::makeMbdJoint(App::D
     }
 
     JointType jointType = getJointType(joint);
+
+    if (jointType == JointType::RigidGroup) {
+        auto const* const componentsProp = joint->getPropertyByName<App::PropertyLinkList>(
+            "Components"
+        );
+        const auto components = getValidUniqueComponents(componentsProp);
+        if (components.size() < 2) {
+            return {};
+        }
+
+        std::vector<std::shared_ptr<MbD::ASMTJoint>> mbdJoints;
+        App::DocumentObject* const root = components.front();
+        const Base::Placement rootGlobalPlc = getPlacementFromProp(root, "Placement");
+
+        auto makeMarkerName = [&](const std::string& suffix, int index) {
+            return joint->getFullName() + "-RigidGroup-" + std::to_string(index) + "-" + suffix;
+        };
+
+        auto makeMarkerForPart = [&](App::DocumentObject* part,
+                                     const Base::Placement& globalAnchor,
+                                     const std::string& markerName) -> std::string {
+            MbDPartData data = getMbDData(part);
+            std::shared_ptr<ASMTPart> mbdPart = data.part;
+
+            Base::Placement partGlobalPlc = getPlacementFromProp(part, "Placement");
+            Base::Placement markerPlc = partGlobalPlc.inverse() * globalAnchor;
+
+            if (!data.offsetPlc.isIdentity()) {
+                markerPlc = data.offsetPlc * markerPlc;
+            }
+
+            auto mbdMarker = makeMbdMarker(markerName, markerPlc);
+            mbdPart->addMarker(mbdMarker);
+            return "/OndselAssembly/" + mbdPart->name + "/" + markerName;
+        };
+
+        for (size_t i = 1; i < components.size(); ++i) {
+            App::DocumentObject* const other = components[i];
+            if (!other || other == root) {
+                continue;
+            }
+
+            if (getMbDPart(root) == getMbDPart(other)) {
+                continue;
+            }
+
+            const std::string markerIName = makeMarkerName("I", static_cast<int>(i));
+            const std::string markerJName = makeMarkerName("J", static_cast<int>(i));
+
+            const std::string fullMarkerNameI = makeMarkerForPart(root, rootGlobalPlc, markerIName);
+            const std::string fullMarkerNameJ = makeMarkerForPart(other, rootGlobalPlc, markerJName);
+
+            auto mbdJoint = CREATE<ASMTFixedJoint>::With();
+            mbdJoint->setName(joint->getFullName() + "-RigidGroup-" + std::to_string(i));
+            mbdJoint->setMarkerI(fullMarkerNameI);
+            mbdJoint->setMarkerJ(fullMarkerNameJ);
+            mbdJoints.push_back(mbdJoint);
+        }
+
+        return mbdJoints;
+    }
 
     std::shared_ptr<ASMTJoint> mbdJoint = makeMbdJointOfType(joint, jointType);
     if (!mbdJoint || !isMbDJointValid(joint)) {
@@ -1940,6 +2050,10 @@ AssemblyObject::MbDPartData AssemblyObject::getMbDData(App::DocumentObject* part
                     App::DocumentObject* part2 = getMovingPartFromRef(joint, "Reference2");
                     App::DocumentObject* partToAdd = currentPart == part1 ? part2 : part1;
 
+                    if (!partToAdd) {
+                        continue;
+                    }
+
                     if (objectPartMap.find(partToAdd) != objectPartMap.end()) {
                         // already added
                         continue;
@@ -1951,6 +2065,28 @@ AssemblyObject::MbDPartData AssemblyObject::getMbDData(App::DocumentObject* part
 
                     // Recursively call for partToAdd
                     self(partToAdd, self);
+                }
+                else if (jointType == JointType::RigidGroup) {
+                    auto const* const componentsProp
+                        = joint->getPropertyByName<App::PropertyLinkList>("Components");
+                    const auto components = getValidUniqueComponents(componentsProp);
+                    if (components.size() < 2
+                        || std::ranges::find(components, currentPart) == components.end()) {
+                        continue;
+                    }
+
+                    for (auto* const partToAdd : components) {
+                        if (!partToAdd || partToAdd == currentPart
+                            || objectPartMap.find(partToAdd) != objectPartMap.end()) {
+                            continue;
+                        }
+
+                        Base::Placement plci = getPlacementFromProp(partToAdd, "Placement");
+                        MbDPartData partData = {mbdPart, plc.inverse() * plci};
+                        objectPartMap[partToAdd] = partData;
+
+                        self(partToAdd, self);
+                    }
                 }
             }
         };
@@ -1994,7 +2130,7 @@ std::shared_ptr<ASMTPart> AssemblyObject::makeMbdPart(std::string& name, Base::P
     return mbdPart;
 }
 
-std::shared_ptr<ASMTMarker> AssemblyObject::makeMbdMarker(std::string& name, Base::Placement& plc)
+std::shared_ptr<ASMTMarker> AssemblyObject::makeMbdMarker(const std::string& name, Base::Placement& plc)
 {
     auto mbdMarker = CREATE<ASMTMarker>::With();
     mbdMarker->setName(name);
@@ -2060,17 +2196,48 @@ App::DocumentObject* AssemblyObject::getUpstreamMovingPart(
         return nullptr;
     }
 
-    excludeJoints.push_back(joint);
-
-    joint = getJointOfPartConnectingToGround(part, name, excludeJoints);
-    JointType jointType = getJointType(joint);
-    if (jointType != JointType::Fixed) {
-        return part;
+    std::unordered_set<App::DocumentObject*> visitedParts;
+    std::unordered_set<App::DocumentObject*> visitedJoints;
+    for (auto* excludedJoint : excludeJoints) {
+        if (excludedJoint) {
+            visitedJoints.insert(excludedJoint);
+        }
     }
 
-    part = getMovingPartFromRef(joint, name == "Reference1" ? "Reference2" : "Reference1");
+    App::DocumentObject* currentPart = part;
+    while (currentPart && !isPartGrounded(currentPart)) {
+        if (!visitedParts.insert(currentPart).second) {
+            break;
+        }
 
-    return getUpstreamMovingPart(part, joint, name);
+        std::vector<App::DocumentObject*> excluded(visitedJoints.begin(), visitedJoints.end());
+        joint = getJointOfPartConnectingToGround(currentPart, name, excluded);
+        if (!joint) {
+            return nullptr;
+        }
+        if (!visitedJoints.insert(joint).second) {
+            break;
+        }
+
+        JointType jointType = getJointType(joint);
+        if (jointType != JointType::Fixed && jointType != JointType::RigidGroup) {
+            return currentPart;
+        }
+
+        const auto connectedParticipants = getConnectedJointParticipants(joint, currentPart);
+        const auto nextIt = std::ranges::find_if(connectedParticipants, [&](const ObjRef& connected) {
+            return connected.obj && !visitedParts.contains(connected.obj);
+        });
+        if (nextIt == connectedParticipants.end()) {
+            break;
+        }
+
+        currentPart = nextIt->obj;
+    }
+
+    joint = nullptr;
+    name.clear();
+    return nullptr;
 }
 
 double AssemblyObject::getObjMass(App::DocumentObject* obj)
