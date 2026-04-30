@@ -380,6 +380,29 @@ class CommandCreateJointBelt:
         activateJoint(12)
 
 
+class CommandCreateJointRigidGroup:
+    def __init__(self):
+        pass
+
+    def GetResources(self):
+        return {
+            "Pixmap": "Assembly_AssemblyLinkRigid",
+            "MenuText": QT_TRANSLATE_NOOP("Assembly_CreateJointRigidGroup", "Rigid Group"),
+            "Accel": "Y",
+            "ToolTip": QT_TRANSLATE_NOOP(
+                "Assembly_CreateJointRigidGroup",
+                "Creates a rigid group that permanently locks the selected components together",
+            ),
+            "CmdType": "ForEdit",
+        }
+
+    def IsActive(self):
+        return isCreateJointActive()
+
+    def Activated(self):
+        activateJoint(13)
+
+
 class CommandGroupGearBelt:
     def GetCommands(self):
         return ("Assembly_CreateJointGears", "Assembly_CreateJointBelt")
@@ -518,4 +541,5 @@ if App.GuiUp:
     Gui.addCommand("Assembly_CreateJointScrew", CommandCreateJointScrew())
     Gui.addCommand("Assembly_CreateJointGears", CommandCreateJointGears())
     Gui.addCommand("Assembly_CreateJointBelt", CommandCreateJointBelt())
+    Gui.addCommand("Assembly_CreateJointRigidGroup", CommandCreateJointRigidGroup())
     Gui.addCommand("Assembly_CreateJointGearBelt", CommandGroupGearBelt())

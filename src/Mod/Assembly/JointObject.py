@@ -1281,6 +1281,8 @@ class ViewProviderJoint:
             return ":/icons/Assembly_CreateJointGears.svg"
         elif self.app_obj.JointType == "Belt":
             return ":/icons/Assembly_CreateJointPulleys.svg"
+        elif self.app_obj.JointType == "RigidGroup":
+            return ":/icons/Assembly_AssemblyLinkRigid.svg"
 
         return ":/icons/Assembly_CreateJoint.svg"
 
